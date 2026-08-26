@@ -1,6 +1,20 @@
-# --- Annotations (local data, not versioned) ---
-annotations/
-annotations_drone/
+# --- Annotation data (JSON + images, wherever they live: annotations/,
+#     annotations_drone/, all_annotations/, drone_extraction/linm_ref.json,
+#     drone_extraction/*.png previews...). .py tools are never matched by
+#     these globs, so annotate.py/assign_split.py/extract_linm.py etc. stay
+#     tracked automatically. ---
+*.json
+!example_annotations.json
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.png
+*.PNG
+*.tif
+*.TIF
+*.tiff
+*.TIFF
 
 # --- Prepared training data ---
 pet_final/data*/
@@ -9,6 +23,7 @@ pet_final/data*/
 pet_final/outputs*/
 PET/outputs*/
 pet_final_out/
+PET_jobs/
 *.log
 *.out
 

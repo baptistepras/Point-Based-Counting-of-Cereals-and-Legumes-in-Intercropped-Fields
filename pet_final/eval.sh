@@ -5,7 +5,8 @@
 #   sbatch pet_final/eval.sh --wheat
 #   sbatch pet_final/eval.sh --pea --resolution 1500
 #   sbatch pet_final/eval.sh --wheat --bordure
-#   sbatch pet_final/eval.sh --wheat --px 25
+#   sbatch pet_final/eval.sh --wheat --px_wheat 25
+#   sbatch pet_final/eval.sh --pea   --px_pea 50
 #   sbatch pet_final/eval.sh --wheat --drone --resolution 2048
 #   sbatch pet_final/eval.sh --wheat --resume PET/outputs/SHA/pet_wheat_1500/best_checkpoint.pth
 #
@@ -27,7 +28,8 @@ WHEAT=false
 PEA=false
 DRONE=false
 BORDURE=""
-PX=""
+PX_WHEAT=""
+PX_PEA=""
 RES=2048
 ENV_NAME="${PET_ENV:-PET_ENV}"
 while [[ $# -gt 0 ]]; do
@@ -43,7 +45,8 @@ while [[ $# -gt 0 ]]; do
                 BORDURE=20; shift
             fi
             ;;
-        --px)         PX="$2";         shift 2 ;;
+        --px_wheat)   PX_WHEAT="$2";  shift 2 ;;
+        --px_pea)     PX_PEA="$2";    shift 2 ;;
         --resolution) RES="$2";        shift 2 ;;
         --env)        ENV_NAME="$2";   shift 2 ;;
         *)            shift ;;
@@ -103,15 +106,16 @@ echo "Symlink : data/ShanghaiTech/part_A -> pet_final/${DATA_SUBDIR}/${SPECIES_D
 
 SPECIES_ARG="--pea" && [[ "$PEA" != true ]] && SPECIES_ARG=""
 DRONE_ARG=""   && [[ "$DRONE" == true ]] && DRONE_ARG="--drone"
-BORDURE_ARG="" && [[ -n "$BORDURE" ]] && BORDURE_ARG="--bordure $BORDURE"
-PX_ARG=""      && [[ -n "$PX"      ]] && PX_ARG="--px $PX"
+BORDURE_ARG=""   && [[ -n "$BORDURE"  ]] && BORDURE_ARG="--bordure $BORDURE"
+PX_WHEAT_ARG=""  && [[ -n "$PX_WHEAT" ]] && PX_WHEAT_ARG="--px_wheat $PX_WHEAT"
+PX_PEA_ARG=""    && [[ -n "$PX_PEA"   ]] && PX_PEA_ARG="--px_pea $PX_PEA"
 
 cd "$JOB_PET"
 srun python "$ROOT/pet_final/eval_metrics.py" \
     --dataset_file  SHA \
     --resume        "$RESUME" \
     --resolution    "$RES" \
-    $SPECIES_ARG $DRONE_ARG $BORDURE_ARG $PX_ARG
+    $SPECIES_ARG $DRONE_ARG $BORDURE_ARG $PX_WHEAT_ARG $PX_PEA_ARG
 
 echo "============================================================"
 echo "Done : $(date)   Outputs : pet_final/outputs_${DRONE_TAG}${SPECIES_DIR}_${RES}${BORDURE_SUFFIX}/"

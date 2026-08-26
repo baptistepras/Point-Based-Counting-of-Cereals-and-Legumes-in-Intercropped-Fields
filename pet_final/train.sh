@@ -112,6 +112,7 @@ export MASTER_PORT=$((10000 + ${SLURM_JOB_ID:-0} % 20000))
 echo "Distributed : MASTER_ADDR=$MASTER_ADDR  MASTER_PORT=$MASTER_PORT  (world_size=1)"
 
 SPECIES_ARG="--pea" && [[ "$PEA" != true ]] && SPECIES_ARG="--wheat"
+DRONE_ARG="" && [[ "$DRONE" == true ]] && DRONE_ARG="--drone"
 
 srun python main.py \
     --dataset_file SHA \
@@ -123,7 +124,8 @@ srun python main.py \
     --lr_backbone  "$LR_BACKBONE" \
     --eval_freq    5 \
     --resolution   "$RES" \
-    $SPECIES_ARG
+    $SPECIES_ARG \
+    $DRONE_ARG
 
 echo "============================================================"
 echo "Done : $(date)"

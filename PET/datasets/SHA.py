@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 
 class SHA(Dataset):
     def __init__(self, data_root, transform=None, train=False, flip=False,
-                 force_prefix: str | None = None):
+                 force_prefix: str | None = None, train_subset: int | None = None):
         self.root_path = data_root
 
         # force_prefix overrides the default train/val split directory
@@ -24,10 +24,19 @@ class SHA(Dataset):
         # get image and ground-truth list
         self.gt_list = {}
         for img_name in self.img_list:
-            img_path = f"{data_root}/{prefix}/images/{img_name}"  
+            img_path = f"{data_root}/{prefix}/images/{img_name}"
             gt_path = f"{data_root}/{prefix}/ground-truth/GT_{img_name}"
             self.gt_list[img_path] = gt_path.replace("jpg", "mat")
         self.img_list = sorted(list(self.gt_list.keys()))
+
+        # train_subset: keep a fixed-seed random prefix of the full (sorted) list, so a
+        # smaller subset always nests inside every larger one — for data-size learning
+        # curves. Only applies to the train split; val/test are never subsetted.
+        if train and train_subset is not None and train_subset < len(self.img_list):
+            shuffled = list(self.img_list)
+            random.Random(42).shuffle(shuffled)
+            self.img_list = sorted(shuffled[:train_subset])
+
         self.nSamples = len(self.img_list)
 
         self.transform = transform
@@ -142,7 +151,8 @@ def build(image_set, args):
     
     data_root = args.data_path
     if image_set == 'train':
-        train_set = SHA(data_root, train=True, transform=transform, flip=True)
+        train_set = SHA(data_root, train=True, transform=transform, flip=True,
+                        train_subset=getattr(args, 'train_subset', None))
         return train_set
     elif image_set == 'val':
         val_set = SHA(data_root, train=False, transform=transform)

@@ -85,59 +85,139 @@ def print_stats(stats: dict, title: str) -> None:
         print(f"pred=0: {stats['n_zero']} / {stats['n']}")
 
 
-# ── Point matching (TP/FP/FN) ─────────────────────────────────────────────────
+# ── Point matching (TP/FP/FN) + border filtering ────────────────────────────
+#
+# Matching always runs first, on the full unfiltered point sets, and the
+# border is applied afterward: a matched (TP) pair survives as long as at
+# least one of its two points is outside the border — both points are kept
+# and drawn even if one of them is geometrically inside the border band. This
+# avoids the edge case where a real detection would otherwise be miscounted
+# as a border-cut FP/FN purely because the border happened to fall between a
+# GT point and its correctly-matched prediction. A pair is only dropped if
+# BOTH its points are inside the border. Unmatched points (isolated FP/FN)
+# are still filtered by the border individually, same as before.
 
-def _match_points(pred_pts: np.ndarray, gt_pts: np.ndarray,
-                  threshold_px: float = 20.0) -> tuple[int, int, int, float]:
-    """Greedy distance-sorted matching → (TP, FP, FN, mean_tp_dist).
+def _in_border_mask(pts: np.ndarray, W: int, H: int, border_px: float) -> np.ndarray:
+    """True for each point within border_px of any image edge."""
+    if len(pts) == 0:
+        return np.zeros(0, dtype=bool)
+    b = border_px
+    inside = (pts[:, 0] >= b) & (pts[:, 0] <= W - b) & (pts[:, 1] >= b) & (pts[:, 1] <= H - b)
+    return ~inside
 
-    Computes all (pred, gt) pairs within threshold, sorts by distance, assigns
-    greedily from closest; each point used at most once.
+
+def _match_and_border(pred_pts: np.ndarray | None, gt_pts: np.ndarray | None, img_path: str,
+                      threshold_px: float, border_px: float
+                      ) -> tuple[np.ndarray, np.ndarray, int, int, int, float]:
+    """Greedy-match the full point sets, then border-filter. See module note above.
+
+    Returns (kept_pred_pts, kept_gt_pts, tp, fp, fn, tp_dist_sum).
     """
-    if len(gt_pts) == 0 and len(pred_pts) == 0:
-        return 0, 0, 0, 0.0
-    if len(gt_pts) == 0:
-        return 0, int(len(pred_pts)), 0, 0.0
-    if len(pred_pts) == 0:
-        return 0, 0, int(len(gt_pts)), 0.0
-    diffs = pred_pts[:, None, :] - gt_pts[None, :, :]   # (P, G, 2)
-    dists = np.sqrt((diffs ** 2).sum(-1))                # (P, G)
-    pi, gi = np.where(dists <= threshold_px)
-    if len(pi) == 0:
-        return 0, int(len(pred_pts)), int(len(gt_pts)), 0.0
-    d_vals = dists[pi, gi]
-    order = np.argsort(d_vals)
-    pi, gi, d_vals = pi[order], gi[order], d_vals[order]
-    matched_p: set[int] = set()
-    matched_g: set[int] = set()
-    tp = 0
-    tp_dist_sum = 0.0
-    for idx in range(len(pi)):
-        p, g = int(pi[idx]), int(gi[idx])
-        if p not in matched_p and g not in matched_g:
-            matched_p.add(p); matched_g.add(g)
-            tp += 1
-            tp_dist_sum += float(d_vals[idx])
-    mean_dist = tp_dist_sum / tp if tp > 0 else 0.0
-    return tp, int(len(pred_pts)) - tp, int(len(gt_pts)) - tp, mean_dist
+    pred_pts = pred_pts if pred_pts is not None else np.zeros((0, 2))
+    gt_pts   = gt_pts   if gt_pts   is not None else np.zeros((0, 2))
 
+    # Greedy distance-sorted matching on the full, unfiltered point sets.
+    matched: dict[int, int] = {}
+    if len(pred_pts) > 0 and len(gt_pts) > 0:
+        diffs = pred_pts[:, None, :] - gt_pts[None, :, :]   # (P, G, 2)
+        dists = np.sqrt((diffs ** 2).sum(-1))                # (P, G)
+        pi, gi = np.where(dists <= threshold_px)
+        if len(pi) > 0:
+            d_vals = dists[pi, gi]
+            order = np.argsort(d_vals)
+            matched_g: set[int] = set()
+            for idx in order:
+                p, g = int(pi[idx]), int(gi[idx])
+                if p not in matched and g not in matched_g:
+                    matched[p] = g
+                    matched_g.add(g)
 
-def _agg_detection(rows: list, threshold_px: float = 20.0) -> tuple[int, int, int, float]:
-    """Sum TP/FP/FN and weighted mean TP distance over a row list."""
+    W = H = None
+    if border_px > 0:
+        try:
+            with Image.open(img_path) as im:
+                W, H = im.size
+        except Exception:
+            border_px = 0.0  # unreadable image — skip border filtering rather than crash
+
+    pred_in_border = _in_border_mask(pred_pts, W, H, border_px) if border_px > 0 else np.zeros(len(pred_pts), dtype=bool)
+    gt_in_border   = _in_border_mask(gt_pts,   W, H, border_px) if border_px > 0 else np.zeros(len(gt_pts),   dtype=bool)
+
+    matched_gt_idx = set(matched.values())
+    kept_pred_idx: list[int] = []
+    kept_gt_idx:   list[int] = []
     tp = fp = fn = 0
     tp_dist_sum = 0.0
-    for row in rows:
-        gt, pred, stem, img_path, pred_pts, gt_pts = row[0], row[1], row[2], row[3], row[4], row[5]
-        if pred_pts is None or len(pred_pts) == 0:
-            fn += int(len(gt_pts))
-        elif len(gt_pts) == 0:
-            fp += int(len(pred_pts))
-        else:
-            t, f_p, f_n, md = _match_points(pred_pts, gt_pts, threshold_px)
-            tp += t; fp += f_p; fn += f_n
-            tp_dist_sum += md * t
+
+    for p, g in matched.items():
+        if pred_in_border[p] and gt_in_border[g]:
+            continue  # both ends inside the border — genuinely excluded
+        kept_pred_idx.append(p)
+        kept_gt_idx.append(g)
+        tp += 1
+        tp_dist_sum += float(np.linalg.norm(pred_pts[p] - gt_pts[g]))
+
+    for p in range(len(pred_pts)):
+        if p in matched or pred_in_border[p]:
+            continue
+        kept_pred_idx.append(p)
+        fp += 1
+
+    for g in range(len(gt_pts)):
+        if g in matched_gt_idx or gt_in_border[g]:
+            continue
+        kept_gt_idx.append(g)
+        fn += 1
+
+    kept_pred = pred_pts[kept_pred_idx] if kept_pred_idx else np.zeros((0, 2))
+    kept_gt   = gt_pts[kept_gt_idx]     if kept_gt_idx   else np.zeros((0, 2))
+    return kept_pred, kept_gt, tp, fp, fn, tp_dist_sum
+
+
+def _process_positive_rows(rows: list[tuple], threshold_px: float, border_px: float
+                           ) -> tuple[list[tuple], int, int, int, float]:
+    """Match + border-filter every same-species row. Returns (new_rows, tp, fp, fn, mean_tp_dist)."""
+    new_rows: list[tuple] = []
+    tp = fp = fn = 0
+    tp_dist_sum = 0.0
+    for gt, pred, stem, img_path, pred_pts, gt_pts in rows:
+        kept_pred, kept_gt, t, f_p, f_n, d_sum = _match_and_border(
+            pred_pts, gt_pts, img_path, threshold_px, border_px)
+        tp += t; fp += f_p; fn += f_n
+        tp_dist_sum += d_sum
+        new_rows.append((len(kept_gt), len(kept_pred), stem, img_path, kept_pred, kept_gt))
     mean_dist = tp_dist_sum / tp if tp > 0 else 0.0
-    return tp, fp, fn, mean_dist
+    return new_rows, tp, fp, fn, mean_dist
+
+
+def _border_filter_points(pts: np.ndarray | None, img_path: str, border_px: float) -> np.ndarray:
+    """Drop points within border_px of any edge — no matching involved.
+
+    For negative/opposite-species rows, where the row's "gt_pts" is the other
+    species' real annotations and matching predictions against them wouldn't
+    be meaningful — only the predicted points matter there.
+    """
+    if pts is None or len(pts) == 0 or border_px <= 0:
+        return pts if pts is not None else np.zeros((0, 2))
+    try:
+        with Image.open(img_path) as im:
+            W, H = im.size
+    except Exception:
+        return pts
+    b = border_px
+    m = (pts[:, 0] >= b) & (pts[:, 0] <= W - b) & (pts[:, 1] >= b) & (pts[:, 1] <= H - b)
+    return pts[m]
+
+
+def _border_filter_neg_rows(rows: list[tuple], border_px: float) -> list[tuple]:
+    """Border-filter predicted points only, for negative (opposite-species) rows."""
+    if border_px <= 0:
+        return rows
+    filtered = []
+    for gt, pred, stem, img_path, pred_pts, gt_pts in rows:
+        new_pred = _border_filter_points(pred_pts, img_path, border_px)
+        filtered.append((gt, len(new_pred), stem, img_path, new_pred, gt_pts))
+    return filtered
 
 
 def _print_detection_stats(tp: int, fp: int, fn: int, mean_dist: float, title: str,
@@ -181,16 +261,21 @@ def _save_points_viz(out_dir: Path, stem: str, img_path: Path,
                      pred_pts: np.ndarray | None,
                      gt_pts: np.ndarray | None = None,
                      border_px: float = 0.0) -> None:
-    """Save image with predicted (yellow, r=5) and optional GT (dark blue, r=8) points."""
+    """Save image with predicted (yellow, r=5) and optional GT (dark blue, r=8) points.
+
+    Border rect is drawn *before* the points (not after) so a point kept despite
+    sitting inside the border band (a matched pair split by the border — see
+    _match_and_border) stays visible instead of being painted over.
+    """
     img = Image.open(img_path).convert("RGB")
     frame = np.array(img)[:, :, ::-1].copy()
     n = len(pred_pts) if pred_pts is not None else 0
+    if border_px > 0:
+        _draw_border_rect(frame, border_px)
     if gt_pts is not None and len(gt_pts) > 0:
         _draw_circles(frame, gt_pts, color_bgr=(139, 0, 0), radius=8)
     if pred_pts is not None and n > 0:
         _draw_circles(frame, pred_pts, color_bgr=(0, 255, 255), radius=5)  # yellow BGR
-    if border_px > 0:
-        _draw_border_rect(frame, border_px)
     cv2.putText(frame, f"pred={n}", (10, 35), cv2.FONT_HERSHEY_SIMPLEX,
                 1.0, (0, 255, 255), 2)
     cv2.imwrite(str(out_dir / f"{stem}.jpg"), frame)
@@ -216,34 +301,6 @@ def _write_points_json(out_dir: Path, rows: list[tuple]) -> None:
             "gt_pts":   gt_pts.tolist()   if gt_pts   is not None and len(gt_pts)   > 0 else [],
         }
     (out_dir / "points.json").write_text(json.dumps(data, indent=2))
-
-
-def _apply_border_filter(rows: list[tuple], border_px: float) -> list[tuple]:
-    """Remove pred/GT points within border_px of any image edge; update counts."""
-    if border_px <= 0:
-        return rows
-    filtered = []
-    for row in rows:
-        gt, pred, stem, img_path, pred_pts, gt_pts = row
-        try:
-            with Image.open(img_path) as im:
-                W, H = im.size
-        except Exception:
-            filtered.append(row)
-            continue
-        b = border_px
-
-        def _mask(pts: np.ndarray | None) -> np.ndarray:
-            if pts is None or len(pts) == 0:
-                return np.zeros((0, 2)) if pts is None else pts
-            m = (pts[:, 0] >= b) & (pts[:, 0] <= W - b) & \
-                (pts[:, 1] >= b) & (pts[:, 1] <= H - b)
-            return pts[m]
-
-        new_pred = _mask(pred_pts)
-        new_gt   = _mask(gt_pts)
-        filtered.append((len(new_gt), len(new_pred), stem, img_path, new_pred, new_gt))
-    return filtered
 
 
 # ── Scatter plot ──────────────────────────────────────────────────────────────
@@ -405,15 +462,19 @@ def main() -> None:
     _ep.add_argument("--bordure", type=int, nargs="?", const=20, default=None,
                      help="Exclude points inside a border (px at 2048, scaled with --resolution);"
                           " no value = 20 px, absent = no border")
-    _ep.add_argument("--px", type=int, default=20,
-                     help="Pred/GT matching threshold in px at 2048 (scaled with --resolution); default 20")
+    _ep.add_argument("--px_wheat", type=int, default=20,
+                     help="Wheat pred/GT matching threshold in px at 2048 (scaled with --resolution); default 20")
+    _ep.add_argument("--px_pea", type=int, default=40,
+                     help="Pea pred/GT matching threshold in px at 2048 (scaled with --resolution); default 40 "
+                          "(pea tolerates a larger localization error than wheat before a match is wrong)")
     extra, remaining = _ep.parse_known_args()
     base_args = get_args_parser().parse_args(remaining)
     base_args.distributed = False
 
     res = extra.resolution
     _res_scale = res / 2048.0
-    match_threshold = float(extra.px) * _res_scale
+    px_base = extra.px_pea if extra.pea else extra.px_wheat
+    match_threshold = float(px_base) * _res_scale
     border_px: float = float(extra.bordure) * _res_scale if extra.bordure is not None else 0.0
 
     device = torch.device("cuda")
@@ -459,12 +520,11 @@ def main() -> None:
 
     if dataset_train is not None:
         rows_train = _infer_dataset(model, dataset_train, device, prefix="[TRAIN] ")
-        if border_px > 0:
-            rows_train = _apply_border_filter(rows_train, border_px)
+        rows_train, tp, fp, fn, mean_dist = _process_positive_rows(rows_train, match_threshold, border_px)
         pos_by_split["train"] = rows_train
         print_stats(compute_stats([(gt, pred) for gt, pred, *_ in rows_train]),
                     f"PET {spec} — train")
-        _print_detection_stats(*_agg_detection(rows_train, match_threshold), f"PET {spec} — train detection", threshold_px=match_threshold)
+        _print_detection_stats(tp, fp, fn, mean_dist, f"PET {spec} — train detection", threshold_px=match_threshold)
     else:
         pos_by_split["train"] = []
 
@@ -473,8 +533,7 @@ def main() -> None:
         pos_train_stems = {s for _, _, s, *_ in pos_by_split.get("train", [])}
         neg_train_all = _infer_dataset(model, neg_dataset_train, device,
                                        prefix="[NEG-TRAIN] ")
-        if border_px > 0:
-            neg_train_all = _apply_border_filter(neg_train_all, border_px)
+        neg_train_all = _border_filter_neg_rows(neg_train_all, border_px)
         neg_train_excl = [(0, pred, s, ip, pp, gp)
                           for _, pred, s, ip, pp, gp in neg_train_all
                           if s not in pos_train_stems]
@@ -488,17 +547,15 @@ def main() -> None:
     # Val split (user's held-out validation split used for checkpoint selection)
     if dataset_val is not None:
         rows_val = _infer_dataset(model, dataset_val, device, prefix="[VAL] ")
-        if border_px > 0:
-            rows_val = _apply_border_filter(rows_val, border_px)
+        rows_val, tp, fp, fn, mean_dist = _process_positive_rows(rows_val, match_threshold, border_px)
         pos_by_split["val"] = rows_val
         print_stats(compute_stats([(gt, pred) for gt, pred, *_ in rows_val]),
                     f"PET {spec} — val")
-        _print_detection_stats(*_agg_detection(rows_val, match_threshold), f"PET {spec} — val detection", threshold_px=match_threshold)
+        _print_detection_stats(tp, fp, fn, mean_dist, f"PET {spec} — val detection", threshold_px=match_threshold)
         if neg_dataset_val is not None:
             pos_val_stems = {s for _, _, s, *_ in rows_val}
             neg_val_all = _infer_dataset(model, neg_dataset_val, device, prefix="[NEG-VAL] ")
-            if border_px > 0:
-                neg_val_all = _apply_border_filter(neg_val_all, border_px)
+            neg_val_all = _border_filter_neg_rows(neg_val_all, border_px)
             neg_val_excl = [(0, pred, s, ip, pp, gp) for _, pred, s, ip, pp, gp in neg_val_all
                             if s not in pos_val_stems]
             neg_by_split["val"] = [(0, pred, s) for _, pred, s, *_ in neg_val_excl]
@@ -511,20 +568,18 @@ def main() -> None:
     # Test split
     named = _infer_dataset(model, dataset_test, device)
 
-    if border_px > 0:
-        named = _apply_border_filter(named, border_px)
+    named, tp, fp, fn, mean_dist = _process_positive_rows(named, match_threshold, border_px)
     pos_by_split["test"] = named
     print_stats(compute_stats([(gt, pred) for gt, pred, *_ in named]),
                 f"PET {spec} — test")
-    _print_detection_stats(*_agg_detection(named, match_threshold), f"PET {spec} — test detection", threshold_px=match_threshold)
+    _print_detection_stats(tp, fp, fn, mean_dist, f"PET {spec} — test detection", threshold_px=match_threshold)
 
     # Negative evaluation
     neg_rows: list[tuple] = []
     if neg_dataset_test is not None:
         pos_stems = {s for _, _, s, *_ in named}
         neg_all = _infer_dataset(model, neg_dataset_test, device, prefix="[NEG] ")
-        if border_px > 0:
-            neg_all = _apply_border_filter(neg_all, border_px)
+        neg_all = _border_filter_neg_rows(neg_all, border_px)
         neg_rows = [(0, pred, s, ip, pp, gp) for _, pred, s, ip, pp, gp in neg_all
                     if s not in pos_stems]
         neg_by_split["test"] = [(0, pred, s) for _, pred, s, *_ in neg_rows]

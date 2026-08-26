@@ -6,7 +6,6 @@ import sys
 import time
 from pathlib import Path
 import os
-import shutil
 
 import numpy as np
 import torch
@@ -67,6 +66,10 @@ def get_args_parser():
     parser.add_argument('--data_path', default="./data/ShanghaiTech/PartA", type=str)
     parser.add_argument('--wheat', action='store_true', help='Wheat mono mode')
     parser.add_argument('--pea', action='store_true', help='Pea mono mode')
+    parser.add_argument('--drone', action='store_true',
+                        help='Drone run — only affects where the learning curve is saved '
+                             '(outputs_drone_<species>_<resolution>/ instead of '
+                             'outputs_<species>_<resolution>/), to match train.sh checkpoint naming')
 
     # misc parameters
     parser.add_argument('--output_dir', default='',
@@ -82,12 +85,65 @@ def get_args_parser():
     parser.add_argument('--syn_bn', default=0, type=int)
     parser.add_argument('--resolution', default=2048, type=int,
                         help='Long-side resolution used at data preparation; matching threshold = 20 * resolution/2048')
+    parser.add_argument('--train_subset', default=None, type=int,
+                        help='If set, train on only this many images — a fixed random '
+                             'prefix of the full shuffled train set, so smaller subsets '
+                             'nest inside larger ones — instead of the whole prepared '
+                             'train split, without creating a new data directory. Used '
+                             'for data-size learning curves (see pet_final/datasize_curve.sh).')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     return parser
+
+
+def _plot_learning_curve(train_loss_history: list, val_mae_history: list, val_f1_history: list,
+                         mode_label: str, resolution: int, out_path: Path) -> None:
+    """Render and save the train-loss / val-MAE / val-F1 learning curve figure to out_path."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, ax1 = plt.subplots(figsize=(11, 5))
+    epochs_t, losses = zip(*train_loss_history)
+    ax1.plot(epochs_t, losses, color='#4477AA', label='Train loss')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Train loss', color='#4477AA')
+    ax1.tick_params(axis='y', labelcolor='#4477AA')
+    ax1.grid(True, alpha=0.3)
+
+    lines, labels = ax1.get_legend_handles_labels()
+
+    if val_mae_history:
+        ax2 = ax1.twinx()
+        epochs_m, maes = zip(*val_mae_history)
+        ax2.plot(epochs_m, maes, color='#EE9922', marker='o', ms=3, label='Val MAE')
+        ax2.set_ylabel('Val MAE', color='#EE9922')
+        ax2.tick_params(axis='y', labelcolor='#EE9922')
+        l2, la2 = ax2.get_legend_handles_labels()
+        lines += l2
+        labels += la2
+
+    if val_f1_history:
+        ax3 = ax1.twinx()
+        ax3.spines['right'].set_position(('outward', 60))
+        epochs_f, f1s = zip(*val_f1_history)
+        ax3.plot(epochs_f, [f * 100 for f in f1s], color='#EE4444',
+                 marker='s', ms=3, label='Val F1 (%)')
+        ax3.set_ylabel('Val F1 (%)', color='#EE4444')
+        ax3.tick_params(axis='y', labelcolor='#EE4444')
+        ax3.set_ylim(0, 100)
+        l3, la3 = ax3.get_legend_handles_labels()
+        lines += l3
+        labels += la3
+
+    ax1.set_title(f'PET — Learning curve ({mode_label}, res={resolution})')
+    ax1.legend(lines, labels, loc='upper right')
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
 
 
 def main(args):
@@ -160,6 +216,17 @@ def main(args):
             log_file.write("{}".format(args))
             log_file.write("parameters: {}".format(n_parameters))
 
+    # learning curve output path — outputs_[drone_]<species>_<resolution>/vis/, matching
+    # the checkpoint/eval-output naming convention (see README "Naming conventions").
+    # --train_subset runs get their own _n<N>-suffixed folder so a datasize_curve.sh
+    # sweep never overwrites the main run's (or each other's) per-epoch curve.
+    mode_label = 'pea' if args.pea else 'wheat'
+    drone_part = 'drone_' if args.drone else ''
+    subset_part = f'_n{args.train_subset}' if args.train_subset else ''
+    _mpac = Path(__file__).resolve().parent.parent
+    curve_vis_dir = _mpac / 'pet_final' / f'outputs_{drone_part}{mode_label}_{args.resolution}{subset_part}' / 'vis'
+    curve_path = curve_vis_dir / f'learningcurve_{mode_label}_{args.resolution}{subset_part}.png'
+
     # resume
     best_val, best_epoch = float('inf'), 0  # best val MAE
     match_threshold = 20.0 * args.resolution / 2048.0
@@ -181,7 +248,8 @@ def main(args):
     print("Start training")
     start_time = time.time()
     train_loss_history: list = []
-    val_f1_history:    list = []
+    val_mae_history:    list = []
+    val_f1_history:     list = []
     for epoch in range(args.start_epoch, args.epochs):
         t1 = time.time()
 
@@ -210,6 +278,7 @@ def main(args):
             'epoch': epoch,
             'args': args,
             'best_mae': best_val,
+            'best_epoch': best_epoch,
         }, output_dir / 'checkpoint.pth')
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
@@ -232,6 +301,7 @@ def main(args):
             if mae < best_val:
                 best_epoch = epoch
                 best_val   = mae
+            val_mae_history.append((epoch, mae))
             val_f1_history.append((epoch, f1))
             print("\n==========================")
             print(f"\nepoch: {epoch}  mae: {mae:.2f}  mse: {mse:.2f}")
@@ -247,7 +317,23 @@ def main(args):
                         f"time:{t2-t1:.1f}s "
                         f"best_mae:{best_val:.2f} best_epoch:{best_epoch}\n\n")
             if mae == best_val and utils.is_main_process():
-                shutil.copyfile(output_dir / 'checkpoint.pth', output_dir / 'best_checkpoint.pth')
+                # Saved fresh (not copied from checkpoint.pth) so its own best_mae/
+                # best_epoch fields reflect *this* epoch's new best, not the stale
+                # value checkpoint.pth was written with earlier in this same epoch.
+                utils.save_on_master({
+                    'model': model_without_ddp.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'epoch': epoch,
+                    'args': args,
+                    'best_mae': best_val,
+                    'best_epoch': best_epoch,
+                }, output_dir / 'best_checkpoint.pth')
+
+            if utils.is_main_process():
+                curve_vis_dir.mkdir(parents=True, exist_ok=True)
+                _plot_learning_curve(train_loss_history, val_mae_history, val_f1_history,
+                                     mode_label, args.resolution, curve_path)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -258,42 +344,10 @@ def main(args):
         print("==========================================\n")
 
     if train_loss_history and utils.is_main_process():
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        _mpac = Path(__file__).resolve().parent.parent
-        mode_label = 'pea' if args.pea else 'wheat'
-        vis = _mpac / 'pet_final' / f'outputs_{mode_label}_{args.resolution}' / 'vis'
-        vis.mkdir(parents=True, exist_ok=True)
-        curve_name = f"learningcurve_{mode_label}_{args.resolution}.png"
-
-        fig, ax1 = plt.subplots(figsize=(11, 5))
-        epochs_t, losses = zip(*train_loss_history)
-        ax1.plot(epochs_t, losses, color='#4477AA', label='Train loss')
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Loss', color='#333333')
-        ax1.tick_params(axis='y')
-        ax1.grid(True, alpha=0.3)
-
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = [], []
-        if val_f1_history:
-            ax2 = ax1.twinx()
-            epochs_v, f1s = zip(*val_f1_history)
-            ax2.plot(epochs_v, [f * 100 for f in f1s], color='#EE4444',
-                     marker='o', ms=3, label='Val F1 (%)')
-            ax2.set_ylabel('Val F1 (%)', color='#EE4444')
-            ax2.tick_params(axis='y', labelcolor='#EE4444')
-            ax2.set_ylim(0, 100)
-            lines2, labels2 = ax2.get_legend_handles_labels()
-
-        ax1.set_title(f'PET — Learning curve ({mode_label}, res={args.resolution})')
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-        fig.tight_layout()
-        out_path = vis / curve_name
-        fig.savefig(out_path, dpi=120)
-        plt.close(fig)
-        print(f"Learning curve → {out_path}")
+        curve_vis_dir.mkdir(parents=True, exist_ok=True)
+        _plot_learning_curve(train_loss_history, val_mae_history, val_f1_history,
+                             mode_label, args.resolution, curve_path)
+        print(f"Learning curve → {curve_path}")
 
 
 if __name__ == '__main__':

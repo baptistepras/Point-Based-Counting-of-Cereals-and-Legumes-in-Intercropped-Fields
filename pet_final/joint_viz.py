@@ -148,11 +148,13 @@ def process(wheat_dir: Path, pea_dir: Path) -> None:
         }
 
         # preds/ — predicted points only
+        # Border drawn first so points eval_metrics.py kept despite sitting inside
+        # the border band (a matched pair split by the border) stay visible.
         frame = frame_base.copy()
-        _draw_circles(frame, w_pred, WHEAT_PRED, radius=5)
-        _draw_circles(frame, p_pred, PEA_PRED,   radius=5)
         if border_px > 0:
             _draw_border_rect(frame, border_px)
+        _draw_circles(frame, w_pred, WHEAT_PRED, radius=5)
+        _draw_circles(frame, p_pred, PEA_PRED,   radius=5)
         frame = _add_legend(frame, [
             (f"Wheat pred ({len(w_pred)})", WHEAT_PRED),
             (f"Pea pred ({len(p_pred)})",   PEA_PRED),
@@ -161,12 +163,12 @@ def process(wheat_dir: Path, pea_dir: Path) -> None:
 
         # gt/ — GT + predicted points
         frame = frame_base.copy()
+        if border_px > 0:
+            _draw_border_rect(frame, border_px)
         _draw_circles(frame, w_gt,   WHEAT_GT,   radius=8)
         _draw_circles(frame, p_gt,   PEA_GT,     radius=8)
         _draw_circles(frame, w_pred, WHEAT_PRED, radius=5)
         _draw_circles(frame, p_pred, PEA_PRED,   radius=5)
-        if border_px > 0:
-            _draw_border_rect(frame, border_px)
         frame = _add_legend(frame, [
             (f"Wheat pred ({len(w_pred)})", WHEAT_PRED),
             (f"Pea pred ({len(p_pred)})",   PEA_PRED),
