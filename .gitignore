@@ -5,6 +5,8 @@
 #     tracked automatically. ---
 *.json
 !example_annotations.json
+!all_annotations/annotations_wheat.json
+!all_annotations/annotations_pea.json
 *.jpg
 *.JPG
 *.jpeg
