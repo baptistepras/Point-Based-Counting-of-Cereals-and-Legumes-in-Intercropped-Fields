@@ -10,6 +10,8 @@ This is a cleaned-up, single-configuration version of the original experiment
 tree: only the retained pipeline is here (whole-image resize, no
 tiling/TPC-pretraining variants, no dual-species joint model).
 
+⚠️ Warning : Our data being private, it is not available here.
+
 ## Structure
 
 ```
