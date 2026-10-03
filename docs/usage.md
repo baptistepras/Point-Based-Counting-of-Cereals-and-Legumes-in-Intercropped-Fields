@@ -162,7 +162,8 @@ is part of the `PET_ENV` conda env from Setup step 1.
    EPSG:2154). Right-click records a corner, left-click pans. Per transect:
    call `set_plot(X, Y)`, then 4 right-clicks for the "5SW" variant (TL, TR,
    BR, BL corners in that order), then 4 more for "3NE". Writes
-   `drone_extraction/linm_ref.json` in real time. Other console commands:
+   `drone_extraction/linm_ref.json` in real time. Set `REPO_ROOT` at the top of
+   the script to the folder of this repository before running it. Other console commands:
    `remove(X, Y[, "5SW"|"3NE"])`, `undo()`, `status()`, `stop()`, `resume()`,
    `done()`; see the module docstring for the full list.
 

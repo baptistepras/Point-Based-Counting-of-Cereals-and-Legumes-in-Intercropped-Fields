@@ -33,8 +33,10 @@ from qgis.core import (QgsCoordinateTransform, QgsCoordinateReferenceSystem,
 from qgis.PyQt.QtCore import Qt
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-# Update this if wpcount/ lives somewhere else on this machine.
-OUTPUT_PATH = Path("/Users/baptiste/Documents/MPAC/wpcount/drone_extraction/linm_ref.json")
+# Set this to the folder of this repository on your machine: the script is
+# pasted into the QGIS console, so it cannot find its own location.
+REPO_ROOT = Path.home() / "Point-Based-Counting-of-Cereals-and-Legumes-in-Intercropped-Fields"
+OUTPUT_PATH = REPO_ROOT / "drone_extraction" / "linm_ref.json"
 CORNERS  = ["TL", "TR", "BR", "BL"]
 VARIANTS = ["5SW", "3NE"]   # always collect 5SW first, then 3NE
 

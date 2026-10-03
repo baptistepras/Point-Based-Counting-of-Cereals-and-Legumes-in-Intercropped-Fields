@@ -71,14 +71,14 @@ docs/               usage guide
 
 ## References
 
-- B. Pras. Point-based counting of cereals and legumes in intercropped fields. Poster, *11th Junior Conference on Data Science and Engineering (JDSE)*, 2026. https://hal.science/hal-05765378
+- B. Pras. Point-based counting of cereals and legumes in intercropped fields. Poster, *Junior Conference on Data Science and Engineering (JDSE)*, 2026. https://hal.science/hal-05765378
 - C. Liu, H. Lu, Z. Cao, and T. Liu. Point-query quadtree for crowd counting, localization, and more. *ICCV*, 2023.
 - Y. Zhang, D. Zhou, S. Chen, S. Gao, and Y. Ma. Single-image crowd counting via multi-column convolutional neural network. *CVPR*, 2016.
 - K. Simonyan and A. Zisserman. Very deep convolutional networks for large-scale image recognition. *ICLR*, 2015.
 - N. Đukić, A. Lukežič, V. Zavrtanik, and M. Kristan. A low-shot object counting network with iterative prototype adaptation. *ICCV*, 2023.
 - Z. Huang, M. Dai, Y. Zhang, J. Zhang, and H. Shan. Point, segment and count: a generalized framework for object counting. *CVPR*, 2024.
 - X. Hu, X. Li, J. Xu, A. D. Adan, L. Zhou, X. Zhu, Y. Li, W. Guo, S. Liu, W. Liu, and H. Lu. TasselNetV4: a vision foundation model for cross-scene, cross-scale, and cross-species plant counting. arXiv:2509.20857, 2025.
-- B. Wang, H. Liu, D. Samaras, and M. Hoai. Distribution matching for crowd counting. *NeurIPS*, 2020.
+- B. Wang, H. Liu, D. Samaras, and M. Hoai Nguyen. Distribution matching for crowd counting. *NeurIPS*, 2020.
 
 ## Third-party code
 
