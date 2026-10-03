@@ -1,0 +1,20 @@
+# Environment for wheat and pea counting with PET.
+# The pet_final/*.sh SLURM scripts activate it by name (PET_ENV).
+# PyTorch comes from pip with the exact versions used for our results:
+# on Linux the PyPI wheels of torch 2.3.1 are built with CUDA 12.1.
+name: PET_ENV
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - tk               # Tkinter for annotate.py and explore_outputs.py
+  - pip
+  - pip:
+      - torch==2.3.1
+      - torchvision==0.18.1
+      - numpy<3
+      - scipy          # Hungarian matching, .mat ground truth files
+      - opencv-python
+      - matplotlib
+      - pillow
+      - gdown          # crowd counting checkpoint from Google Drive

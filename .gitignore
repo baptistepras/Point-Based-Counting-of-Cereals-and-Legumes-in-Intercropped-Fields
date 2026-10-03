@@ -58,3 +58,6 @@ ENV/
 .Trashes
 .vscode/
 .idea/
+
+# README figures
+!assets/*.jpg
